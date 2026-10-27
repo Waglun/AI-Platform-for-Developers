@@ -1,0 +1,56 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="{% static 'leads/css/crm.css' %}">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Заявки CRM</title>
+</head>
+<body>
+    <main>
+        <h1>Заявки</h1>
+
+        <p>Всего заявок: {{ leads|length }}</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>№</th>
+                    <th>Клиент</th>
+                    <th>Телефон</th>
+                    <th>Бюджет</th>
+                    <th>Источник</th>
+                    <th>Статус</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for lead in leads %}
+                    <tr>
+                        <td>{{ lead.id }}</td>
+                        <td>{{ lead.contact.name }}</td>
+                        <td>{{ lead.contact.phone }}</td>
+                        <td>
+                            {{ lead.budget_min|default_if_none:"—" }}
+                            –
+                            {{ lead.budget_max|default_if_none:"—" }}
+                        </td>
+                        <td>{{ lead.get_source_display }}</td>
+                        <td>{{ lead.get_status_display }}</td>
+                        <td>
+                            <a href="{% url 'crm-lead-detail' lead.pk %}">
+                                Открыть
+                            </a>
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr>
+                        <td colspan="7">Заявок пока нет.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </main>
+</body>
+</html>

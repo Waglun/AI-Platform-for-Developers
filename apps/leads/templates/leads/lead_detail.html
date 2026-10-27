@@ -1,0 +1,132 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <link rel="stylesheet" href="{% static 'leads/css/crm.css' %}">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Заявка №{{ lead.id }} | CRM</title>
+</head>
+<body>
+    <main>
+        {% if messages %}
+            <section>
+                {% for message in messages %}
+                    <p>{{ message }}</p>
+                {% endfor %}
+            </section>
+        {% endif %}
+
+        <p>
+            <a href="{% url 'crm-lead-list' %}">← К списку заявок</a>
+        </p>
+
+        <h1>Заявка №{{ lead.id }}</h1>
+
+        <section>
+            <h2>Контактные данные</h2>
+
+            <p>Имя: {{ lead.contact.name }}</p>
+            <p>Телефон: {{ lead.contact.phone }}</p>
+            <p>Email: {{ lead.contact.email|default:"Не указан" }}</p>
+        </section>
+
+        <section>
+            <h2>Параметры заявки</h2>
+
+            <p>
+                Бюджет:
+                {{ lead.budget_min|default_if_none:"Не указан" }}
+                –
+                {{ lead.budget_max|default_if_none:"Не указан" }}
+                ₽
+            </p>
+
+            <p>Источник: {{ lead.get_source_display }}</p>
+            <p>Статус: {{ lead.get_status_display }}</p>
+            {% if can_change_status %}
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="update_status">
+
+                    <label for="status">Изменить статус:</label>
+
+                    <select name="status" id="status">
+                        {% for value, label in status_choices %}
+                            <option
+                                value="{{ value }}"
+                                {% if lead.status == value %}selected{% endif %}
+                            >
+                                {{ label }}
+                            </option>
+                        {% endfor %}
+                    </select>
+
+                    <button type="submit">Сохранить статус</button>
+                </form>
+            {% endif %}
+
+            <h3>Требования клиента</h3>
+
+            {% if requirements_display %}
+                <ul>
+                    {% for item in requirements_display %}
+                        <li>{{ item.label }}: {{ item.value }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p>Требования пока не указаны.</p>
+            {% endif %}
+        </section>
+
+        <section>
+            <h2>Выбранные квартиры</h2>
+
+            {% for apartment in lead.apartments.all %}
+                <p>
+                    Квартира №{{ apartment.number }},
+                    {{ apartment.area_m2 }} м²,
+                    {{ apartment.price_rub }} ₽
+                </p>
+            {% empty %}
+                <p>Клиент пока не выбрал квартиры.</p>
+            {% endfor %}
+        </section>
+
+        <section>
+            <h2>Комментарии</h2>
+
+            {% for comment in lead.comments.all %}
+                <article>
+                    <p>{{ comment.text }}</p>
+                    <small>
+                        {{ comment.author.get_full_name|default:"Сотрудник" }}
+                        · {{ comment.created_at|date:"d.m.Y H:i" }}
+                    </small>
+                </article>
+            {% empty %}
+                <p>Комментариев пока нет.</p>
+            {% endfor %}
+
+            <h3>Добавить комментарий</h3>
+
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="add_comment">
+
+                <label for="comment-text">Текст комментария</label>
+                <textarea
+                    id="comment-text"
+                    name="text"
+                    rows="4"
+                    required
+                    maxlength="5000"
+                    placeholder="Напишите результат разговора с клиентом..."
+                ></textarea>
+
+                <button type="submit">Добавить комментарий</button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>
