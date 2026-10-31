@@ -43,6 +43,12 @@ class Conversation(models.Model):
         verbose_name="Заявка CRM",
     )
 
+    context = models.JSONField(
+        "Контекст диалога",
+        default=dict,
+        blank=True
+    )
+
     created_at = models.DateTimeField("Создан", auto_now_add=True)
     updated_at = models.DateTimeField("Обновлён", auto_now=True)
 

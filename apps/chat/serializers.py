@@ -20,7 +20,24 @@ class SendMessageSerializer(serializers.Serializer):
     content = serializers.CharField(
         max_length=5000,
         trim_whitespace=True,
+        required=False,
     )
+
+    action = serializers.CharField(
+        max_length=50,
+        required=False,
+    )
+
+    def validate(self, attrs):
+        content = attrs.get("content")
+        action = attrs.get("action")
+
+        if bool(content) == bool(action):
+            raise serializers.ValidationError(
+                "Укажите либо текст сообщения, либо действие."
+            )
+
+        return attrs
 
     def validate_content(self, value):
         if not value.strip():
