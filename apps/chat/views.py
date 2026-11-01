@@ -169,6 +169,16 @@ class ChatMessagesAPIView(APIView):
                 "budget_8": "До 8 млн ₽",
                 "budget_10": "До 10 млн ₽",
                 "budget_any": "Рассмотрю разные варианты",
+                "area_40_45": "40–45 м²",
+                "area_45_50": "45–50 м²",
+                "area_50_plus": "От 50 м²",
+                "area_60_65": "60–65 м²",
+                "area_65_70": "65–70 м²",
+                "area_70_plus": "От 70 м²",
+                "area_60_70": "60–70 м²",
+                "area_70_85": "70–85 м²",
+                "area_85_plus": "От 85 м²",
+                "area_any": "Любая площадь",
             }
 
             if action not in action_labels:
