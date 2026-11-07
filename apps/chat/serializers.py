@@ -18,6 +18,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
 class SendMessageSerializer(serializers.Serializer):
     request_id = serializers.UUIDField()
+    apartment_id = serializers.IntegerField(min_value=1, required=False)
 
     content = serializers.CharField(
         max_length=5000,
@@ -38,6 +39,8 @@ class SendMessageSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Укажите либо текст сообщения, либо действие."
             )
+        if (action == "select_apartment") != ("apartment_id" in attrs):
+            raise serializers.ValidationError("apartment_id требуется только для явного выбора квартиры.")
 
         return attrs
 

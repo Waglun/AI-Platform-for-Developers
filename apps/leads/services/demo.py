@@ -8,7 +8,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import APIException, ValidationError
 
 from apps.catalog.search import available_apartments
-from apps.leads.models import Contact, Lead, LeadComment
+from apps.leads.models import Contact, Lead, LeadComment, CRMDelivery
 
 from .base import CRMClient
 
@@ -118,6 +118,7 @@ class DemoCRMClient(CRMClient):
                        ("budget_min", "budget_max", "requirements", "source")},
                 )
                 lead.apartments.set(ids)
+                CRMDelivery.objects.create(lead=lead, payload={**json.loads(json.dumps(operation, default=str)), "lead_id": lead.pk})
                 return lead
         except IntegrityError:
             # The entire losing operation (including contact changes) is rolled back.

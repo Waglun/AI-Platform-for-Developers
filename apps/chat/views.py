@@ -3,25 +3,41 @@ import uuid
 from datetime import timedelta
 
 from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.cache import never_cache
+from rest_framework.throttling import ScopedRateThrottle
 from django.utils import timezone
 
-from django.db import transaction
+from django.db import connection, transaction
+from django.urls import reverse
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.renderers import JSONRenderer
 from rest_framework.views import APIView
 
-from apps.chat.llm.base import LLMClient, LLMError, build_messages, redact
+from apps.chat.analytics import emit
+from apps.chat.dialog import run_dialog
 from apps.chat.context import normalize_context
 from apps.chat.models import ChatRequest, Conversation, Message
 from apps.chat.serializers import MessageSerializer, SendMessageSerializer
 from apps.chat.services import get_apartment_results
+from apps.chat.tools import execute
+
+
+def attribution(request):
+    data = request.data if isinstance(request.data, dict) else {}
+    return {key: data[key][:1000] for key in
+            ("entry_page", "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content")
+            if isinstance(data.get(key), str)}
+
 
 SESSION_VISITOR_KEY = "chat_visitor_id"
 SUGGESTIONS = ["Подобрать квартиру", "О жилом комплексе", "Записаться на показ"]
 ACTION_TEXT = dict(zip(["apartment_search", "complex_info", "showing"], SUGGESTIONS))
 ACTION_TEXT.update({
+    "select_apartment": "Выбрать квартиру",
     "show_more": "Показать ещё", "change_filters": "Изменить параметры",
     "location": "Расположение", "infrastructure": "Инфраструктура",
     "buildings": "Дома и сроки сдачи", "purchase_terms": "Условия покупки",
@@ -47,6 +63,8 @@ for low, high in [(40, 45), (45, 50), (50, None), (60, 65), (65, 70),
 
 
 def get_visitor_id(request):
+    if getattr(request, 'widget_visitor_id', None):
+        return request.widget_visitor_id
     try:
         return uuid.UUID(str(request.session.get(SESSION_VISITOR_KEY)))
     except (ValueError, TypeError, AttributeError):
@@ -66,33 +84,53 @@ def snapshot(conversation):
     return {
         "conversation_id": str(conversation.pk), "status": conversation.status,
         "context": conversation.context,
+        "contact_form": {"available": True, "url": reverse("chat-contact", args=[conversation.pk])},
+        "lead_id": conversation.lead_id,
+        "pending_request": next((dict(request_id=str(op.request_id), **op.payload)
+                                 for op in conversation.chatrequest_set.filter(result={})), None),
         "messages": MessageSerializer(conversation.messages.all(), many=True).data,
     }
 
 
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
 class ChatStartAPIView(APIView):
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "chat_start"
     permission_classes = [AllowAny]
 
     @transaction.atomic
     def post(self, request):
         visitor_id = get_visitor_id(request)
+        # Serialize first start as well as restoration for a stable visitor.
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [visitor_id.int % (2 ** 63)])
         conversation = Conversation.objects.select_for_update().filter(
             visitor_id=visitor_id, status=Conversation.Status.ACTIVE,
         ).first()
         if conversation is None:
             conversation = Conversation.objects.create(
-                visitor_id=visitor_id, context=normalize_context({}),
+                visitor_id=visitor_id, context=normalize_context({"attribution": attribution(request)}),
             )
+            emit("dialog_started", conversation)
             Message.objects.create(
                 conversation=conversation, role=Message.Role.ASSISTANT,
-                content="Здравствуйте! Я ИИ-консультант ЖК «Сибиряков». Чем могу помочь?",
+                content=(settings.CHAT_WIDGET['welcome'] if getattr(request, 'widget_visitor_id', None)
+                         else "Здравствуйте! Я ИИ-консультант ЖК «Сибиряков». Чем могу помочь?"),
                 metadata={"type": "welcome", "suggestions": SUGGESTIONS},
             )
         upgrade(conversation)
+        recover_pending(conversation)
         return Response(snapshot(conversation))
 
 
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
 class ChatMessagesAPIView(APIView):
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "chat_messages"
     permission_classes = [AllowAny]
 
     def owned(self, request, conversation_id):
@@ -105,24 +143,22 @@ class ChatMessagesAPIView(APIView):
     def get(self, request, conversation_id):
         conversation = self.owned(request, conversation_id)
         upgrade(conversation)
+        recover_pending(conversation)
         return Response(snapshot(conversation))
 
     def post(self, request, conversation_id):
         prepared = self.prepare(request, conversation_id)
         if isinstance(prepared, Response):
             return prepared
-        conversation, operation, messages = prepared
-        try:
-            reply = LLMClient().complete(messages)
-            reply = redact(reply, conversation.context)
-            metadata = {"type": "llm_reply"}
-        except LLMError as exc:
-            reply, metadata = failure(exc.code)
+        conversation, operation = prepared
+        reply, metadata, context = run_dialog(conversation, operation)
         with transaction.atomic():
             conversation = Conversation.objects.select_for_update().get(pk=conversation.pk)
             operation.refresh_from_db()
             if operation.result:
                 return Response(operation.result)
+            conversation.context = context
+            conversation.save(update_fields=["context"])
             return Response(finish(conversation, operation, reply, metadata))
 
     @transaction.atomic
@@ -140,7 +176,7 @@ class ChatMessagesAPIView(APIView):
         ).first()
         pending = ChatRequest.objects.filter(conversation=conversation, result={}).first()
         if pending and pending.started_at < timezone.now() - timedelta(
-                seconds=2 * settings.LLM_TIMEOUT_SECONDS + 30):
+                seconds=3 * settings.LLM_TIMEOUT_SECONDS + 30):
             finish(conversation, pending, *failure("interrupted"))
             if previous and previous.pk == pending.pk:
                 previous.refresh_from_db()
@@ -166,16 +202,28 @@ class ChatMessagesAPIView(APIView):
             conversation=conversation, role=Message.Role.VISITOR, content=text,
             metadata={"request_id": str(request_id), **({"legacy_action": action} if action else {})},
         )
-        if action != "show_more" and settings.LLM_ENABLED:
+        if action == "select_apartment":
+            _, details = execute("get_apartment_details", {"apartment_id": data["apartment_id"]}, context)
+            if "card" in details:
+                context["selected_apartment_ids"] = [data["apartment_id"]]
+                reply = "Квартира выбрана. Наличие перепроверено; заявка и бронь не оформлены."
+            else:
+                context["selected_apartment_ids"] = []
+                reply = "Не удалось подтвердить доступность квартиры. Выберите другой вариант или повторите позже."
+            operation = ChatRequest.objects.create(conversation=conversation, request_id=request_id,
+                                                   payload=payload, result={})
+            conversation.save(update_fields=["context"])
+            return Response(finish(conversation, operation, reply, {"type": "apartment_selection", **details}))
+        if settings.LLM_ENABLED:
             operation = ChatRequest.objects.create(
                 conversation=conversation, request_id=request_id, payload=payload, result={},
             )
             conversation.save(update_fields=["context", "updated_at"])
             if ChatRequest.objects.filter(conversation=conversation).count() > settings.LLM_MAX_CALLS_PER_CONVERSATION:
                 return Response(finish(conversation, operation, *failure("budget_exhausted")))
-            return conversation, operation, build_messages(conversation)
+            return conversation, operation
         outcome = "saved_not_processed"
-        reply = "Сообщение сохранено. ИИ-консультант ещё не подключён; консультация и отправка заявки пока недоступны."
+        reply = "Сообщение сохранено. ИИ-консультант ещё не подключён. Для обращения менеджеру откройте форму контакта."
         metadata = {"type": outcome}
         if action == "show_more":
             last = context["last_search"]
@@ -201,11 +249,17 @@ class ChatMessagesAPIView(APIView):
         return Response(result)
 
 
+def recover_pending(conversation):
+    pending = conversation.chatrequest_set.filter(result={}).first()
+    if pending and pending.started_at < timezone.now() - timedelta(seconds=3 * settings.LLM_TIMEOUT_SECONDS + 30):
+        finish(conversation, pending, *failure("interrupted"))
+
+
 def failure(code):
     return (
         "ИИ-консультант сейчас недоступен. Сообщение сохранено. "
         "Вы можете повторить обращение позже; заявка не отправлена.",
-        {"type": "llm_error", "code": code, "contact_form": {"available": False, "requested": True}},
+        {"type": "llm_error", "code": code, "contact_form": {"available": True, "requested": True}},
     )
 
 
@@ -218,4 +272,9 @@ def finish(conversation, operation, reply, metadata):
     result.update(request_id=str(operation.request_id), processing={"status": metadata["type"]})
     operation.result = json.loads(JSONRenderer().render(result))
     operation.save(update_fields=["result"])
+    for entry in metadata.get("tools", []):
+        if entry["name"] == "search_apartments":
+            emit("search", conversation)
+    if metadata.get("cards"):
+        emit("apartments_shown", conversation)
     return operation.result

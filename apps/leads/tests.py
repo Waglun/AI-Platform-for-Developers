@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import Permission
 from django.db import close_old_connections, connection
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -64,6 +64,7 @@ class CRMAccessTests(TestCase):
                 self.assertEqual(self.lead.status, "qualified" if allowed else "new")
                 self.lead.status = "new"
                 self.lead.save()
+
                 self.client.logout()
 
     def test_admin_does_not_bypass_role_restriction(self):
@@ -222,3 +223,50 @@ class CRMConcurrencyTests(TransactionTestCase):
         self.assertEqual(results.count("conflict"), 1)
         self.assertEqual(Lead.objects.count(), 1)
         self.assertEqual(Contact.objects.count(), 1)
+
+
+class CRMLoginTests(TestCase):
+    @override_settings(SETTINGS_MODULE='config.settings')
+    def test_demo_manager_rejects_working_settings(self):
+        from django.core.management import call_command, CommandError
+        with self.assertRaises(CommandError):
+            call_command('demo_manager')
+
+    def test_csrf_login_next_and_visitor_session_preserved(self):
+        client = Client(enforce_csrf_checks=True)
+        lead = DemoCRMClient().create_lead(operation())
+        target = reverse('crm-lead-detail', args=[lead.pk])
+        redirect = client.get(target)
+        self.assertEqual(redirect.status_code, 302)
+        self.assertEqual(redirect.url, reverse('login') + '?next=' + target)
+        self.assertEqual(client.get(redirect.url).status_code, 200)
+        self.assertEqual(client.get('/api-auth/login/?next=/api/leads/crm/').status_code, 200)
+        manager = User.objects.create_user(username='login-manager', password='test-local-only', role='manager')
+        session = client.session
+        session['chat_visitor_id'] = 'retained-visitor'
+        session.save()
+        payload = {'username': manager.username, 'password': 'test-local-only', 'next': target}
+        self.assertEqual(client.post(reverse('login'), payload).status_code, 403)
+        client.get(reverse('login'))
+        payload['csrfmiddlewaretoken'] = client.cookies['csrftoken'].value
+        response = client.post(reverse('login'), payload)
+        self.assertRedirects(response, target)
+        self.assertEqual(client.session['chat_visitor_id'], 'retained-visitor')
+        self.assertEqual(client.get(target).status_code, 200)
+
+    def test_demo_manager_preserves_leads_and_cannot_access_admin(self):
+        from apps.chat.management.commands.demo_server import prepare_demo_data
+        import_feed(feed(), observed_at=timezone.now())
+        lead = DemoCRMClient().create_lead(operation())
+        with patch('apps.chat.management.commands.demo_server.seed') as seed_demo:
+            password = prepare_demo_data(keep_data=True)
+        seed_demo.assert_not_called()
+        self.assertTrue(Lead.objects.filter(pk=lead.pk).exists())
+        manager = User.objects.get(username='demo_manager')
+        self.assertFalse(manager.is_staff)
+        self.assertFalse(manager.is_superuser)
+        response = self.client.post(reverse('login'), {'username': 'demo_manager', 'password': password,
+                                                     'next': 'https://example.invalid/'})
+        self.assertRedirects(response, reverse('crm-lead-list'))
+        self.assertEqual(self.client.get(reverse('crm-lead-detail', args=[lead.pk])).status_code, 200)
+        self.assertEqual(self.client.get('/admin/').status_code, 302)

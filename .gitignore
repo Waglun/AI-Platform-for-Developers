@@ -9,6 +9,11 @@ __pycache__/
 
 # Environment variables
 .env
+.env.deploy
+.env.live
+backups/
+deploy/tls/
+.secrets/
 
 # SQLite
 db.sqlite3
@@ -30,3 +35,5 @@ Thumbs.db
 
 *.txt
 .ruff_cache/
+
+.realtor-demo-beat*

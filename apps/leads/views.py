@@ -104,6 +104,13 @@ def lead_page_detail(request, pk):
     if request.method == "POST":
         action = request.POST.get("action")
 
+        if action == "retry_delivery":
+            from .delivery import retry_failed
+            from .models import CRMDelivery
+            delivery = get_object_or_404(CRMDelivery, lead=lead)
+            retry_failed(user, delivery.pk)
+            return redirect("crm-lead-detail", pk=lead.pk)
+
         if action == "update_status":
             if not can_change_status:
                 return HttpResponseForbidden(

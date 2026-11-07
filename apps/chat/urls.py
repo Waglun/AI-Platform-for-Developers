@@ -6,7 +6,11 @@ from apps.chat.views import (
 )
 
 
+from apps.chat.handoff import contact_page
+
+
 urlpatterns = [
+    path("<uuid:conversation_id>/contact/", contact_page, name="chat-contact"),
     path("start/", ChatStartAPIView.as_view(), name="chat-start"),
     path(
         "<uuid:conversation_id>/messages/",

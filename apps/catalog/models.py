@@ -313,7 +313,8 @@ class Apartment(models.Model):
 
         synced_at = self.floor.section.building.stage.complex.catalog_synced_at
         return (
-            self.source_present
+            not self.demo_bookings.filter(status="active", expires_at__gt=timezone.now()).exists()
+            and self.source_present
             and synced_at is not None
             and timezone.now() - timedelta(minutes=settings.CATALOG_MAX_AGE_MINUTES) <= synced_at <= timezone.now()
             and self.source_type == self.SourceType.FLAT

@@ -1,6 +1,7 @@
 from django.contrib import admin
+from django.db import transaction
 
-from .models import Contact, Lead, LeadComment
+from .models import Contact, Lead, LeadComment, CRMDelivery
 from .permissions import can_access_crm
 
 
@@ -46,6 +47,18 @@ class LeadAdmin(CRMAdminAccessMixin, admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     filter_horizontal = ("apartments",)
+
+    @transaction.atomic
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        lead = form.instance
+        # Django changeform wraps save_model/save_related in one transaction.
+        CRMDelivery.objects.get_or_create(lead=lead, defaults={"payload": {
+            "lead_id": lead.pk, "name": lead.contact.name, "phone": lead.contact.phone_normalized,
+            "email": lead.contact.email, "requirements": lead.requirements,
+            "apartment_ids": list(lead.apartments.values_list("pk", flat=True)),
+            "source": lead.source, "budget_min": str(lead.budget_min), "budget_max": str(lead.budget_max),
+        }})
 
 
 @admin.register(LeadComment)

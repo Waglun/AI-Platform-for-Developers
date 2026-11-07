@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -23,7 +24,7 @@ load_dotenv(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "development-only-change-before-deploy")
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or secrets.token_urlsafe(48)
 DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in {"1", "true", "yes"}
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
 DOMOPLANER_FEED_URL = os.environ.get("DOMOPLANER_FEED_URL", "")
@@ -67,6 +68,7 @@ INSTALLED_APPS = [
     'apps.catalog',
     'apps.leads',
     'apps.chat',
+    'apps.knowledge',
     'rest_framework',
 ]
 
@@ -74,6 +76,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'apps.chat.widget.WidgetVisitorMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -156,3 +159,48 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGIN_URL = 'login'
+
+# Separate read-only embeddings; generation retains one LLMClient.
+KNOWLEDGE_EMBEDDINGS_ENABLED = os.environ.get('KNOWLEDGE_EMBEDDINGS_ENABLED', 'false').lower() == 'true'
+KNOWLEDGE_EMBEDDING_MODEL = os.environ.get('KNOWLEDGE_EMBEDDING_MODEL', 'embeddinggemma:latest')
+KNOWLEDGE_MAX_DISTANCE = 0.35
+LOGIN_REDIRECT_URL = 'crm-lead-list'
+
+# Demo limits are per IP in the shared cache; deploy a shared cache before scaling.
+REST_FRAMEWORK = {"NUM_PROXIES": 0, "DEFAULT_THROTTLE_RATES": {
+    "chat_start": "20/min", "chat_messages": "60/min", "chat_contact": "30/min"}}
+DATA_UPLOAD_MAX_MEMORY_SIZE = 32768
+# Explicit allowlist for embedding only the demo chat. No cross-origin API access.
+CHAT_FRAME_ANCESTORS = os.environ.get("CHAT_FRAME_ANCESTORS", "'self' http://localhost:8001 http://127.0.0.1:8001")
+CHAT_WIDGET_TOKEN_AGE = 60 * 60 * 24 * 30
+CHAT_WIDGET = {
+    'catalog': CATALOG_COMPLEX_EXTERNAL_ID,
+    'origins': [o.strip() for o in os.environ.get('CHAT_WIDGET_ORIGINS', 'http://127.0.0.1:8001,http://localhost:8001').split(',') if o.strip()],
+    'color': os.environ.get('CHAT_WIDGET_COLOR', '#245b45'),
+    'logo': os.environ.get('CHAT_WIDGET_LOGO', '/static/chat/logo.svg'),
+    'welcome': os.environ.get('CHAT_WIDGET_WELCOME', 'Здравствуйте! Я ИИ-консультант ЖК «Сибиряков». Чем могу помочь?'),
+}
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"funnel_console": {"class": "logging.StreamHandler"}},
+    "loggers": {"sales.funnel": {"handlers": ["funnel_console"], "level": "INFO", "propagate": False}},
+}
+
+
+# Outbox contains IDs only; no contact payloads enter the broker.
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:56379/0")
+CELERY_TASK_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BEAT_SCHEDULE = {
+    "crm-outbox": {"task": "apps.leads.tasks.sweep_outbox", "schedule": 10.0},
+    "demo-expiry": {"task": "apps.leads.tasks.expire_demo_bookings", "schedule": 30.0},
+}
+# Explicit test failure injection; no arbitrary URLs or error strings.
+CRM_DEMO_FAILURE = os.environ.get("CRM_DEMO_FAILURE", "off")
+if CRM_DEMO_FAILURE not in {"off", "before", "after"}:
+    raise ValueError("Invalid CRM_DEMO_FAILURE")

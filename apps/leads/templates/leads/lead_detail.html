@@ -10,7 +10,8 @@
 <body>
     <main>
         {% if messages %}
-            <section>
+            {% if lead.delivery.status == 'failed' %}<form method="post">{% csrf_token %}<button name="action" value="retry_delivery">Повторить доставку в тестовую CRM</button></form>{% endif %}
+        <section>
                 {% for message in messages %}
                     <p>{{ message }}</p>
                 {% endfor %}
@@ -22,6 +23,7 @@
         </p>
 
         <h1>Заявка №{{ lead.id }}</h1>
+        <p>Доставка в тестовый приёмник CRM: {{ lead.delivery.status|default:"Старая заявка без события" }}. Попыток: {{ lead.delivery.attempts|default:"0" }}.</p>
 
         <section>
             <h2>Контактные данные</h2>
@@ -93,6 +95,14 @@
             {% endfor %}
         </section>
 
+        <section>
+            <h2>Подтверждённые посетителем данные</h2><p>{{ lead.requirements.confirmed_client_data }}</p>
+            <h2>Пожелания из диалога — интерпретация, требует проверки</h2><p>{{ lead.requirements.dialog_preferences_unverified }}</p>
+            <h2>Резюме модели — не подтверждённые клиентом данные</h2><p>{{ lead.requirements.model_summary|default:"Не формировалось" }}</p>
+            <h2>Согласие и источник</h2><p>{{ lead.requirements.consent }}</p><p>{{ lead.requirements.attribution }}</p>
+            <h2>История на момент отправки</h2>
+            {% for message in lead.requirements.history %}<p><strong>{{ message.role }}</strong>: {{ message.content|linebreaksbr }}</p>{% endfor %}
+        </section>
         <section>
             <h2>Комментарии</h2>
 

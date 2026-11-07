@@ -34,7 +34,8 @@ class Conversation(models.Model):
         default=Status.ACTIVE,
     )
 
-    # Заявка появляется только после передачи контактов в CRM.
+    # Последняя подтверждённая заявка. Предыдущие обращения сохраняют conversation_id
+    # и неизменяемые снимки истории/согласия в Lead.requirements.
     lead = models.ForeignKey(
         "leads.Lead",
         on_delete=models.SET_NULL,

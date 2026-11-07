@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class Contact(models.Model):
@@ -158,3 +159,34 @@ class LeadComment(models.Model):
 
     def __str__(self):
         return f"Комментарий к заявке №{self.lead_id}"
+
+class CRMDelivery(models.Model):
+    lead = models.OneToOneField(Lead, on_delete=models.PROTECT, related_name="delivery")
+    payload = models.JSONField(default=dict)
+    status = models.CharField(max_length=12, default="pending")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    lease_token = models.UUIDField(null=True)
+    last_error = models.CharField(max_length=32, blank=True)
+    delivered_at = models.DateTimeField(null=True)
+
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(status__in=["pending", "sending", "delivered", "failed"]), name="crm_delivery_valid_status"),
+            models.CheckConstraint(condition=models.Q(attempts__lte=5), name="crm_delivery_bounded_attempts"),
+        ]
+
+
+class CRMReceipt(models.Model):
+    """Тестовый идемпотентный приёмник; не внешняя CRM."""
+    delivery = models.OneToOneField(CRMDelivery, on_delete=models.PROTECT)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class CRMDeliveryEvent(models.Model):
+    delivery = models.ForeignKey(CRMDelivery, on_delete=models.PROTECT)
+    action = models.CharField(max_length=20)
+    attempt = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
