@@ -109,6 +109,9 @@ class Lead(models.Model):
         null=True,
         blank=True,
     )
+    operation_fingerprint = models.CharField(
+        "Отпечаток исходной операции", max_length=64, blank=True, editable=False,
+    )
     created_at = models.DateTimeField(
         "Создана",
         auto_now_add=True,

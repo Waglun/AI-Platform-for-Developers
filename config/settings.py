@@ -23,12 +23,35 @@ load_dotenv(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-&-ntj8-irpgjaac#qr3lm=i@077h)q8u7d-9&)%1w6nv)3)#&a'
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "development-only-change-before-deploy")
+DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in {"1", "true", "yes"}
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+DOMOPLANER_FEED_URL = os.environ.get("DOMOPLANER_FEED_URL", "")
+CATALOG_COMPLEX_EXTERNAL_ID = os.environ.get("CATALOG_COMPLEX_EXTERNAL_ID", "1368")
+CATALOG_MAX_AGE_MINUTES = int(os.environ.get("CATALOG_MAX_AGE_MINUTES", "60"))
+if CATALOG_MAX_AGE_MINUTES <= 0:
+    raise ValueError("CATALOG_MAX_AGE_MINUTES must be positive")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
+# Network access is opt-in. No provider/model is selected implicitly.
+LLM_ENABLED = os.environ.get("LLM_ENABLED", "false").lower() in {"1", "true", "yes"}
+LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://127.0.0.1:11434")
+LLM_ALLOW_LOOPBACK_HTTP = os.environ.get("LLM_ALLOW_LOOPBACK_HTTP", "false").lower() in {"1", "true", "yes"}
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3:8b")
+LLM_NUM_CTX = int(os.environ.get("LLM_NUM_CTX", "4096"))
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+LLM_TIMEOUT_SECONDS = int(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+LLM_HISTORY_MESSAGES = int(os.environ.get("LLM_HISTORY_MESSAGES", "12"))
+LLM_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "512"))
+LLM_MAX_CALLS_PER_CONVERSATION = int(os.environ.get("LLM_MAX_CALLS_PER_CONVERSATION", "30"))
+for _name, _maximum in {
+    "LLM_TIMEOUT_SECONDS": 180, "LLM_HISTORY_MESSAGES": 12,
+    "LLM_MAX_OUTPUT_TOKENS": 800,
+    "LLM_MAX_CALLS_PER_CONVERSATION": 100,
+}.items():
+    if not 1 <= globals()[_name] <= _maximum:
+        raise ValueError(f"{_name} must be between 1 and {_maximum}")
+if LLM_NUM_CTX != 4096 or not 0 <= LLM_TEMPERATURE <= 1:
+    raise ValueError("Sprint 3.2a requires num_ctx=4096 and temperature in [0, 1]")
 
 
 # Application definition

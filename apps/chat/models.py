@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class Conversation(models.Model):
@@ -102,3 +103,17 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.get_role_display()}: {self.content[:50]}"
+
+class ChatRequest(models.Model):
+    """Committed result of one visitor operation, scoped to a conversation."""
+
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE)
+    request_id = models.UUIDField()
+    payload = models.JSONField()
+    result = models.JSONField()
+    started_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["conversation", "request_id"], name="chat_request_unique"
+        )]

@@ -1,7 +1,13 @@
+import hashlib
+import json
 import re
-from django.db import transaction
 
-from apps.catalog.models import Apartment
+from django.conf import settings
+from django.db import IntegrityError, transaction
+from rest_framework import serializers
+from rest_framework.exceptions import APIException, ValidationError
+
+from apps.catalog.search import available_apartments
 from apps.leads.models import Contact, Lead, LeadComment
 
 from .base import CRMClient
@@ -24,6 +30,34 @@ def normalize_phone(phone: str) -> str:
     return digits
 
 
+class IdempotencyConflict(APIException):
+    status_code = 409
+    default_detail = "Конфликт ключа операции."
+    default_code = "idempotency_conflict"
+
+
+class LeadOperationSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=150)
+    phone = serializers.CharField(max_length=30)
+    email = serializers.EmailField(default="", allow_blank=True)
+    budget_min = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, default=None, allow_null=True)
+    budget_max = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, default=None, allow_null=True)
+    requirements = serializers.JSONField(default=dict)
+    source = serializers.ChoiceField(choices=Lead.Source.choices, default=Lead.Source.WEBSITE_CHAT)
+    apartment_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), default=list)
+    idempotency_key = serializers.CharField(max_length=100, default="", allow_blank=True, allow_null=True)
+
+    def validate(self, attrs):
+        if set(self.initial_data) - set(self.fields):
+            raise serializers.ValidationError("Неизвестные поля операции.")
+        if not isinstance(attrs["requirements"], dict):
+            raise serializers.ValidationError({"requirements": "Ожидается объект требований."})
+        low, high = attrs["budget_min"], attrs["budget_max"]
+        if low is not None and high is not None and low > high:
+            raise serializers.ValidationError("Нижняя граница бюджета превышает верхнюю.")
+        return attrs
+
+
 class DemoCRMClient(CRMClient):
     def find_contact(self, phone: str):
         normalized = normalize_phone(phone)
@@ -32,60 +66,66 @@ class DemoCRMClient(CRMClient):
             phone_normalized=normalized
         ).first()
 
-    @transaction.atomic
     def create_lead(self, data: dict):
-        key = data.get("idempotency_key")
+        serializer = LeadOperationSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        operation = serializer.validated_data
+        operation["phone"] = normalize_phone(operation["phone"])
+        operation["apartment_ids"] = sorted(set(operation["apartment_ids"]))
+        key = operation.pop("idempotency_key") or None
+        canonical = {**operation, "complex": settings.CATALOG_COMPLEX_EXTERNAL_ID}
+        fingerprint = hashlib.sha256(json.dumps(
+            canonical, sort_keys=True, ensure_ascii=False, default=str,
+            allow_nan=False, separators=(",", ":"),
+        ).encode()).hexdigest()
 
-        # Повтор той же операции не должен создавать новую заявку.
+        def replay(lead):
+            if not lead.operation_fingerprint:
+                raise IdempotencyConflict("Исходные данные старой операции неизвестны; используйте новый ключ.")
+            if lead.operation_fingerprint != fingerprint:
+                raise IdempotencyConflict("Ключ операции уже использован с другими данными.")
+            return lead
+
         if key:
-            existing_lead = Lead.objects.filter(
-                idempotency_key=key
-            ).first()
-
-            if existing_lead:
-                return existing_lead
-
-        normalized_phone = normalize_phone(data["phone"])
-
-        contact = Contact.objects.filter(
-            phone_normalized=normalized_phone
-        ).first()
-
-        if contact is None:
-            contact = Contact.objects.create(
-                name=data["name"].strip(),
-                phone=data["phone"],
-                phone_normalized=normalized_phone,
-                email=data.get("email", "").strip(),
-            )
-        else:
-            # Обновляем контакт только непустыми новыми данными.
-            if data.get("name", "").strip():
-                contact.name = data["name"].strip()
-
-            if data.get("email", "").strip():
-                contact.email = data["email"].strip()
-
-            contact.phone = data["phone"]
-            contact.save()
-
-        lead = Lead.objects.create(
-            contact=contact,
-            budget_min=data.get("budget_min"),
-            budget_max=data.get("budget_max"),
-            requirements=data.get("requirements") or {},
-            source=data.get("source", Lead.Source.WEBSITE_CHAT),
-            idempotency_key=key or None,
-        )
-
-        apartment_ids = data.get("apartment_ids", [])
-        if apartment_ids:
-            apartments = Apartment.objects.filter(
-                id__in=apartment_ids
-            )
-            lead.apartments.set(apartments)
-
-        return lead
+            existing = Lead.objects.filter(idempotency_key=key).first()
+            if existing:
+                return replay(existing)
+        try:
+            with transaction.atomic():
+                # get_or_create handles a concurrent insert using the unique phone.
+                contact, _ = Contact.objects.get_or_create(
+                    phone_normalized=operation["phone"],
+                    defaults={"name": operation["name"], "phone": operation["phone"],
+                              "email": operation["email"]},
+                )
+                contact = Contact.objects.select_for_update().get(pk=contact.pk)
+                # A same-phone operation may have completed while we waited.
+                if key:
+                    existing = Lead.objects.filter(idempotency_key=key).first()
+                    if existing:
+                        return replay(existing)
+                ids = operation["apartment_ids"]
+                if set(available_apartments().filter(pk__in=ids).values_list("pk", flat=True)) != set(ids):
+                    raise ValidationError({"apartment_ids": "Выбранные квартиры недоступны или вне разрешённого ЖК."})
+                for field in ("name", "email"):
+                    if operation[field]:
+                        setattr(contact, field, operation[field])
+                contact.phone = operation["phone"]
+                contact.save()
+                lead = Lead.objects.create(
+                    contact=contact, idempotency_key=key, operation_fingerprint=fingerprint,
+                    **{field: operation[field] for field in
+                       ("budget_min", "budget_max", "requirements", "source")},
+                )
+                lead.apartments.set(ids)
+                return lead
+        except IntegrityError:
+            # The entire losing operation (including contact changes) is rolled back.
+            if key:
+                existing = Lead.objects.filter(idempotency_key=key).first()
+                if existing:
+                    return replay(existing)
+            raise
 
     @transaction.atomic
     def add_comment(self, lead_id: int, text: str):

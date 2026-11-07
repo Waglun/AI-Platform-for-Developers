@@ -1,7 +1,6 @@
 from rest_framework import generics
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
-from apps.accounts.models import User
 from apps.leads.models import Lead, LeadComment
 from apps.leads.serializers import (
     LeadDetailSerializer,
@@ -10,6 +9,7 @@ from apps.leads.serializers import (
     LeadCommentCreateSerializer,
 )
 from apps.leads.permissions import (
+    can_access_crm,
     IsCRMStaff,
     CanChangeLeadStatus,
 )
@@ -69,6 +69,9 @@ class LeadCommentCreateAPIView(generics.CreateAPIView):
 
 @login_required
 def lead_page_list(request):
+    if not can_access_crm(request.user):
+        return HttpResponseForbidden("Нет доступа к CRM.")
+
     leads = (
         Lead.objects
         .select_related("contact", "assigned_to")
@@ -86,10 +89,7 @@ def lead_page_list(request):
 def lead_page_detail(request, pk):
     user = request.user
 
-    if not (
-        user.is_superuser
-        or user.role in User.Role.values
-    ):
+    if not can_access_crm(user):
         return HttpResponseForbidden("Нет доступа к CRM.")
 
     lead = get_object_or_404(
@@ -99,10 +99,7 @@ def lead_page_detail(request, pk):
         pk=pk,
     )
 
-    can_change_status = (
-        user.is_superuser
-        or user.role in [User.Role.MANAGER, User.Role.ADMIN]
-    )
+    can_change_status = can_access_crm(user)
 
     if request.method == "POST":
         action = request.POST.get("action")

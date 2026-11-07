@@ -17,6 +17,8 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class SendMessageSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+
     content = serializers.CharField(
         max_length=5000,
         trim_whitespace=True,

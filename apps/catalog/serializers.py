@@ -25,10 +25,15 @@ class ApartmentSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    catalog_synced_at = serializers.DateTimeField(
+        source="floor.section.building.stage.complex.catalog_synced_at", read_only=True,
+    )
+
     class Meta:
         model = Apartment
         fields = [
             "id",
+            "catalog_synced_at",
             "number",
             "rooms",
             "rooms_sign",

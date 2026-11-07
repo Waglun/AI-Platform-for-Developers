@@ -23,6 +23,8 @@ class ResidentialComplex(models.Model):
     )
     name = models.CharField("Название", max_length=200)
 
+    catalog_synced_at = models.DateTimeField("Успешная полная синхронизация", null=True, blank=True)
+
     city = models.CharField("Город", max_length=100, blank=True)
     address = models.CharField("Адрес", max_length=255, blank=True)
     property_class = models.CharField(
@@ -279,6 +281,8 @@ class Apartment(models.Model):
         blank=True,
     )
 
+    source_present = models.BooleanField("Есть в последнем полном фиде", default=False)
+
     created_at = models.DateTimeField("Создана в платформе", auto_now_add=True)
     updated_at = models.DateTimeField("Изменена в платформе", auto_now=True)
 
@@ -303,8 +307,16 @@ class Apartment(models.Model):
 
     @property
     def is_available_for_selection(self):
+        from datetime import timedelta
+        from django.conf import settings
+        from django.utils import timezone
+
+        synced_at = self.floor.section.building.stage.complex.catalog_synced_at
         return (
-            self.source_type == self.SourceType.FLAT
+            self.source_present
+            and synced_at is not None
+            and timezone.now() - timedelta(minutes=settings.CATALOG_MAX_AGE_MINUTES) <= synced_at <= timezone.now()
+            and self.source_type == self.SourceType.FLAT
             and self.source_status == self.SourceStatus.AVAILABLE
             and self.price_rub is not None
             and self.price_rub > 0
